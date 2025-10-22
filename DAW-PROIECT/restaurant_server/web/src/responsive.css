@@ -1,8 +1,0 @@
-@media (max-width: 900px){
-  nav a, nav .btn-link{ padding:6px 10px; }
-  .container{ padding:0 14px; }
-}
-@media (max-width: 640px){
-  .grid{ grid-template-columns:1fr; }
-  .site-header .container{ flex-direction:column; gap:8px; align-items:flex-start; }
-}
