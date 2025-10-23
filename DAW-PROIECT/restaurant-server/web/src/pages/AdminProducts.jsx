@@ -7,6 +7,11 @@ export default function AdminProducts(){
   const [form, setForm] = useState({ name:'', description:'', price:'', image_url:'', category_id:'' });
   const [err, setErr] = useState(null);
 
+  // === state pentru picker imagini ===
+ const [pickerOpen, setPickerOpen] = useState(false);
+  const [assets, setAssets] = useState([]);
+  const [assetsLoading, setAssetsLoading] = useState(false);
+
   async function load(){
     setErr(null);
     try{
@@ -43,6 +48,22 @@ export default function AdminProducts(){
     catch(e){ setErr(e?.response?.data?.error || e.message); }
   }
 
+  // === deschide pickerul și încarcă imaginile din /public/hero ===
+    async function openPicker(){
+    try{
+      setPickerOpen(true);
+      setAssetsLoading(true);
+      // IMPORTANT: folderul tău e "carusel"
+      const { data } = await api.get('/assets/images', { params: { dir: 'carusel' }});
+      setAssets(data.items || []);
+    }catch(e){
+      setErr(e?.response?.data?.error || e.message);
+    }finally{
+      setAssetsLoading(false);
+    }
+  }
+
+
   return (
     <div className="container" style={{marginTop:24}}>
       <h2>Admin – Produse</h2>
@@ -64,10 +85,31 @@ export default function AdminProducts(){
               <label>Preț</label>
               <input type="number" step="0.01" required value={form.price} onChange={e=>setForm({...form,price:e.target.value})}/>
             </div>
+
+            {/* Imagine URL + buton „Alege din carusel” + preview */}
             <div className="form-row">
               <label>Imagine URL</label>
-              <input value={form.image_url} onChange={e=>setForm({...form,image_url:e.target.value})}/>
+              <div style={{display:'flex', gap:8}}>
+                <input
+                  value={form.image_url}
+                  onChange={e=>setForm({...form,image_url:e.target.value})}
+                  style={{flex:1}}
+                  placeholder="/carusel/28.jpeg sau https://…"
+                />
+                <button type="button" className="btn btn-ghost" onClick={openPicker}>
+                  Alege din folder
+                </button>
+              </div>
+              {form.image_url && (
+                <img
+                  src={form.image_url}
+                  alt="preview"
+                  style={{marginTop:8, width:'100%', maxHeight:160, objectFit:'cover', borderRadius:12}}
+                  onError={(e)=>{ e.currentTarget.style.display='none'; }}
+                />
+              )}
             </div>
+
             <div className="form-row">
               <label>Categorie</label>
               <select value={form.category_id} onChange={e=>setForm({...form,category_id:e.target.value})}>
@@ -120,6 +162,58 @@ export default function AdminProducts(){
           ))}
         </tbody>
       </table>
+
+      {/* === MODAL PICKER IMAGINI din /public/hero === */}
+      {pickerOpen && (
+        <div
+          style={{
+            position:'fixed', inset:0, background:'rgba(0,0,0,.45)',
+            display:'grid', placeItems:'center', zIndex:50
+          }}
+          onClick={()=>setPickerOpen(false)}
+        >
+          <div
+            className="card"
+            style={{ width:'min(920px, 96vw)', maxHeight:'80vh', overflow:'auto', borderRadius:16, padding:16 }}
+            onClick={e=>e.stopPropagation()}
+          >
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8}}>
+              <h3 style={{margin:0}}>Alege o imagine</h3>
+              <button className="btn btn-ghost" onClick={()=>setPickerOpen(false)}>Închide</button>
+            </div>
+
+            {assetsLoading ? <p>Se încarcă…</p> : (
+              <div style={{
+                display:'grid',
+                gridTemplateColumns:'repeat(auto-fill, minmax(140px, 1fr))',
+                gap:12
+              }}>
+                {assets.map((it, idx)=>(
+                  <button
+                    key={idx}
+                    onClick={()=>{
+                      setForm(f=>({...f, image_url: it.url}));
+                      setPickerOpen(false);
+                    }}
+                    style={{border:0, padding:0, background:'transparent', cursor:'pointer'}}
+                    title={it.name}
+                  >
+                    <img
+                      src={it.url}
+                      alt={it.name}
+                      style={{width:'100%', height:110, objectFit:'cover', borderRadius:12}}
+                    />
+                    <div style={{fontSize:12, marginTop:4, color:'var(--muted)', textAlign:'center'}}>
+                      {it.name}
+                    </div>
+                  </button>
+                ))}
+                {assets.length === 0 && <p style={{color:'var(--muted)'}}>Nu s-au găsit imagini în /public/hero.</p>}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

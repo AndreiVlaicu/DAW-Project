@@ -9,6 +9,11 @@ const { Pool } = require('pg');
 const pgSession = require('connect-pg-simple')(session);
 const csurf = require('csurf');
 const bcrypt = require('bcryptjs');
+const fs = require('fs');
+const path = require('path');
+
+const PUBLIC_DIR = path.join(__dirname, 'web', 'public');
+
 
 // ---- CONFIG SIMPLĂ (modifică aici dacă ai alt DB/port) ----
 $env: DATABASE_URL = "postgres://postgres:1q2w3e@localhost:5432/dawprojectfinal"
@@ -16,6 +21,11 @@ const PORT = 4000;
 const CORS_ORIGIN = 'http://localhost:5173';
 const SESSION_SECRET = 'dev_secret_schimba_ma';
 
+
+const SAFE_DIRS = {
+    carusel: 'carusel',   // <-- folderul tău
+    uploads: 'uploads',   // (opțional) pentru uploaduri viitoare
+};
 // ---- PG POOL ----
 const pool = new Pool({ connectionString: DATABASE_URL });
 
@@ -59,6 +69,23 @@ app.get('/api/categories', async (req, res) => {
     } catch (e) {
         console.error('GET /api/categories error', e);
         res.status(500).json({ error: 'Eroare server' });
+    }
+});
+app.get('/api/assets/images', (req, res) => {
+    try {
+        const dirKey = String(req.query.dir || 'carusel'); // implicit: carusel
+        const subDir = SAFE_DIRS[dirKey];
+        if (!subDir) return res.status(400).json({ error: 'Director invalid' });
+
+        const abs = path.join(PUBLIC_DIR, subDir);
+        const items = fs.readdirSync(abs)
+            .filter(f => /\.(png|jpe?g|gif|webp|avif)$/i.test(f))
+            .map(name => ({ name, url: `/${subDir}/${name}` })); // URL public
+
+        res.json({ dir: dirKey, items });
+    } catch (e) {
+        console.error('GET /api/assets/images', e);
+        res.status(500).json({ error: 'Eroare listare imagini' });
     }
 });
 app.post('/api/admin/categories', requireEmployee, async (req, res) => {
