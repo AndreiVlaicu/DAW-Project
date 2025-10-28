@@ -1,4 +1,4 @@
-// server.js — Express + PostgreSQL (fără .env)
+// server.js — Express + PostgreSQL (arhitectură MVC)
 
 const express = require('express');
 const helmet = require('helmet');
@@ -12,75 +12,80 @@ const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
 
+// ===== CONFIG =====
+const DATABASE_URL = process.env.DATABASE_URL
+    || 'postgres://postgres:1q2w3e@localhost:5432/dawprojectfinal';
+const PORT = Number(process.env.PORT || 4000);
+const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'dev_secret_schimba_ma';
+
 const PUBLIC_DIR = path.join(__dirname, 'web', 'public');
+const SAFE_DIRS = { carusel: 'carusel', hero: 'carusel', uploads: 'uploads' };
 
+// ===== DB POOL =====
+const pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined,
+});
 
-// ---- CONFIG SIMPLĂ (modifică aici dacă ai alt DB/port) ----
-$env: DATABASE_URL = "postgres://postgres:1q2w3e@localhost:5432/dawprojectfinal"
-const PORT = 4000;
-const CORS_ORIGIN = 'http://localhost:5173';
-const SESSION_SECRET = 'dev_secret_schimba_ma';
-
-
-const SAFE_DIRS = {
-    carusel: 'carusel',   // <-- folderul tău
-    uploads: 'uploads',   // (opțional) pentru uploaduri viitoare
-};
-// ---- PG POOL ----
-const pool = new Pool({ connectionString: DATABASE_URL });
-
-// ---- APP ----
+// ===== APP =====
 const app = express();
 app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
 app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
 
-app.use(session({
-    secret: SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    store: new pgSession({ pool, tableName: 'session', createTableIfMissing: true }),
-    cookie: { httpOnly: true, sameSite: 'lax', secure: false, maxAge: 1000 * 60 * 60 * 24 }
-}));
+app.use(
+    session({
+        secret: SESSION_SECRET,
+        resave: false,
+        saveUninitialized: false,
+        store: new pgSession({
+            pool,
+            tableName: 'session',
+            createTableIfMissing: true,
+        }),
+        cookie: {
+            httpOnly: true,
+            sameSite: 'lax',
+            secure: false,
+            maxAge: 1000 * 60 * 60 * 24,
+        },
+    })
+);
 
-// CSRF: primești token din /api/csrf-token și îl pui în X-CSRF-Token la POST/PUT/DELETE
+// CSRF după sesiuni
 app.use(csurf({ cookie: true }));
 
-// helpers
+// ===== Helpers Auth =====
 function requireAuth(req, res, next) {
     if (!req.session.user) return res.status(401).json({ error: 'Neautentificat' });
     next();
 }
 function requireEmployee(req, res, next) {
-    if (!req.session.user || req.session.user.role !== 'employee') return res.status(403).json({ error: 'Interzis' });
+    if (!req.session.user || req.session.user.role !== 'employee') {
+        return res.status(403).json({ error: 'Interzis' });
+    }
     next();
 }
 
-// ---- ROUTES ----
+// ===== Health + CSRF =====
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
-app.get('/api/csrf-token', (req, res) => res.json({ token: req.csrfToken() }));
+app.get('/api/csrf', (req, res) => { const t = req.csrfToken(); res.set('X-CSRF-Token', t); res.json({ token: t }); });
+app.get('/api/csrf-token', (req, res) => { const t = req.csrfToken(); res.set('X-CSRF-Token', t); res.json({ token: t }); });
 
-// 👇 ADAUGĂ asta AICI (nu la final!):
-app.get('/api/categories', async (req, res) => {
-    try {
-        const { rows } = await pool.query('SELECT id,name,slug FROM categories ORDER BY name ASC');
-        res.json(rows);
-    } catch (e) {
-        console.error('GET /api/categories error', e);
-        res.status(500).json({ error: 'Eroare server' });
-    }
-});
+// ===== ASSETS (imagini din public) =====
 app.get('/api/assets/images', (req, res) => {
     try {
-        const dirKey = String(req.query.dir || 'carusel'); // implicit: carusel
+        const dirKey = String(req.query.dir || 'carusel');
         const subDir = SAFE_DIRS[dirKey];
         if (!subDir) return res.status(400).json({ error: 'Director invalid' });
 
         const abs = path.join(PUBLIC_DIR, subDir);
-        const items = fs.readdirSync(abs)
+        const items = fs
+            .readdirSync(abs)
             .filter(f => /\.(png|jpe?g|gif|webp|avif)$/i.test(f))
-            .map(name => ({ name, url: `/${subDir}/${name}` })); // URL public
+            .map(name => ({ name, url: `/${subDir}/${name}` }));
 
         res.json({ dir: dirKey, items });
     } catch (e) {
@@ -88,41 +93,29 @@ app.get('/api/assets/images', (req, res) => {
         res.status(500).json({ error: 'Eroare listare imagini' });
     }
 });
-app.post('/api/admin/categories', requireEmployee, async (req, res) => {
-    try {
-        let { name, slug } = req.body;
-        if (!name) return res.status(400).json({ error: 'Nume necesar' });
-        if (!slug) slug = name.toLowerCase()
-            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-            .replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-        const { rows } = await pool.query(
-            'INSERT INTO categories(name,slug) VALUES($1,$2) RETURNING id,name,slug',
-            [name, slug]
-        );
-        res.json(rows[0]);
-    } catch (e) {
-        console.error('POST /api/admin/categories error', e);
-        res.status(500).json({ error: 'Eroare server' });
-    }
-});
-// Auth
+
+// ===== AUTH =====
 app.post('/api/auth/register', async (req, res, next) => {
     try {
-        const { name, email, password } = req.body;
+        const { name, email, password, role } = req.body;
         if (!name || !email || !password) return res.status(400).json({ error: 'Câmpuri lipsă' });
+
         const hash = await bcrypt.hash(password, 10);
+        const userRole = role === 'employee' ? 'employee' : 'client';
+
         const { rows } = await pool.query(
-            'INSERT INTO users (name,email,password_hash,role) VALUES ($1,$2,$3,$4) RETURNING id,name,email,role',
-            [name, email, hash, 'client']
+            'INSERT INTO users (name, email, password_hash, role, is_active, created_at, updated_at) VALUES ($1,$2,$3,$4,true,NOW(),NOW()) RETURNING id,name,email,role',
+            [name.trim(), String(email).toLowerCase().trim(), hash, userRole]
         );
         req.session.user = rows[0];
         res.json({ ok: true, user: rows[0] });
     } catch (e) { next(e); }
 });
+
 app.post('/api/auth/login', async (req, res, next) => {
     try {
         const { email, password } = req.body;
-        const { rows } = await pool.query('SELECT * FROM users WHERE email=$1 LIMIT 1', [email]);
+        const { rows } = await pool.query('SELECT * FROM users WHERE email=$1 LIMIT 1', [String(email).toLowerCase().trim()]);
         const u = rows[0];
         if (!u) return res.status(400).json({ error: 'Date invalide' });
         const ok = await bcrypt.compare(password, u.password_hash);
@@ -131,30 +124,42 @@ app.post('/api/auth/login', async (req, res, next) => {
         res.json({ ok: true, user: req.session.user });
     } catch (e) { next(e); }
 });
+
 app.get('/api/auth/me', (req, res) => res.json({ user: req.session.user || null }));
 app.post('/api/auth/logout', requireAuth, (req, res) => req.session.destroy(() => res.json({ ok: true })));
 
-// Products public
-app.get('/api/products', async (_req, res, next) => {
-    try {
-        const { rows } = await pool.query(`
-      SELECT p.id, p.name, p.description, p.price, p.image_url, c.name AS category
-      FROM products p LEFT JOIN categories c ON c.id=p.category_id
-      WHERE p.is_active = true
-      ORDER BY c.name, p.name
-    `);
-        res.json(rows);
-    } catch (e) { next(e); }
-});
-app.get('/api/products/:id', async (req, res, next) => {
-    try {
-        const { rows } = await pool.query('SELECT * FROM products WHERE id=$1', [req.params.id]);
-        if (!rows[0]) return res.status(404).json({ error: 'Produs inexistent' });
-        res.json(rows[0]);
-    } catch (e) { next(e); }
-});
+// ===== MVC: importuri și instanțe =====
+const ProductRepo = require('./server/repositories/product.repo');
+const CategoryRepo = require('./server/repositories/category.repo');
 
-// Cart/Orders (client)
+const ProductService = require('./server/services/product.service');
+const CategoryService = require('./server/services/category.service');
+
+const ProductController = require('./server/controllers/product.controller');
+const CategoryController = require('./server/controllers/category.controller');
+
+const productRoutesFactory = require('./server/routes/product.routes');
+const categoryRoutesFactory = require('./server/routes/category.routes');
+
+const buildApi = require('./server/routes'); // index.js
+const errorHandler = require('./server/middlewares/errorHandler');
+
+// Repo + Service + Controller
+const productRepo = new ProductRepo(pool);
+const categoryRepo = new CategoryRepo(pool);
+
+const productService = new ProductService(productRepo);
+const categoryService = new CategoryService(categoryRepo);
+
+const productController = new ProductController(productService);
+const categoryController = new CategoryController(categoryService);
+
+// Rute /api pentru products + categories (MVC)
+const productsRouter = productRoutesFactory(productController, requireEmployee);
+const categoriesRouter = categoryRoutesFactory(categoryController, requireEmployee);
+app.use('/api', buildApi({ productRoutes: productsRouter, categoryRoutes: categoriesRouter }));
+
+// ===== ORDERS (client) =====
 app.post('/api/orders', requireAuth, async (req, res, next) => {
     const client = await pool.connect();
     try {
@@ -162,7 +167,10 @@ app.post('/api/orders', requireAuth, async (req, res, next) => {
         if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Coș gol' });
 
         await client.query('BEGIN');
-        const insOrder = await client.query('INSERT INTO orders (user_id, status) VALUES ($1,$2) RETURNING id', [req.session.user.id, 'new']);
+        const insOrder = await client.query(
+            'INSERT INTO orders (user_id, status, created_at, updated_at) VALUES ($1,$2,NOW(),NOW()) RETURNING id',
+            [req.session.user.id, 'new']
+        );
         const orderId = insOrder.rows[0].id;
 
         for (const it of items) {
@@ -177,10 +185,10 @@ app.post('/api/orders', requireAuth, async (req, res, next) => {
         await client.query('COMMIT');
         res.json({ ok: true, orderId });
     } catch (e) {
-        await client.query('ROLLBACK');
-        next(e);
+        await client.query('ROLLBACK'); next(e);
     } finally { client.release(); }
 });
+
 app.get('/api/my-orders', requireAuth, async (req, res, next) => {
     try {
         const { rows } = await pool.query(`
@@ -196,7 +204,7 @@ app.get('/api/my-orders', requireAuth, async (req, res, next) => {
     } catch (e) { next(e); }
 });
 
-// Admin (employee)
+// ===== ADMIN: vizualizare comenzi =====
 app.get('/api/admin/orders', requireEmployee, async (_req, res, next) => {
     try {
         const { rows } = await pool.query(`
@@ -206,34 +214,17 @@ app.get('/api/admin/orders', requireEmployee, async (_req, res, next) => {
       JOIN users u ON u.id=o.user_id
       LEFT JOIN order_items oi ON oi.order_id=o.id
       GROUP BY o.id, u.name
-      ORDER BY o.created_at DESC`);
+      ORDER BY o.created_at DESC
+    `);
         res.json(rows);
     } catch (e) { next(e); }
 });
-app.post('/api/admin/products', requireEmployee, async (req, res, next) => {
-    try {
-        const { name, description = '', price, image_url = null, category_id = null } = req.body;
-        if (!name || price == null) return res.status(400).json({ error: 'Nume și preț obligatorii' });
-        const { rows } = await pool.query(
-            'INSERT INTO products (name,description,price,image_url,category_id) VALUES ($1,$2,$3,$4,$5) RETURNING id',
-            [name, description, price, image_url, category_id]
-        );
-        res.json({ ok: true, id: rows[0].id });
-    } catch (e) { next(e); }
-});
 
-app.delete('/api/admin/products/:id', requireEmployee, async (req, res, next) => {
-    try {
-        await pool.query('DELETE FROM products WHERE id=$1', [req.params.id]);
-        res.json({ ok: true });
-    } catch (e) { next(e); }
-});
+// ===== ERROR HANDLER — ULTIMUL =====
+app.use(errorHandler);
 
-// error handler (inclusiv CSRF)
-app.use((err, _req, res, _next) => {
-    if (err.code === 'EBADCSRFTOKEN') return res.status(403).json({ error: 'CSRF invalid' });
-    console.error(err);
-    res.status(500).json({ error: 'Eroare server' });
+// ===== START =====
+app.listen(PORT, () => {
+    console.log(`API: http://localhost:${PORT}`);
+    console.log(`DB:  ${DATABASE_URL}`);
 });
-
-app.listen(PORT, () => console.log(`API: http://localhost:${PORT}`));
