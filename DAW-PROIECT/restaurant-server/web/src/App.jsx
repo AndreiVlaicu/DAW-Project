@@ -11,9 +11,23 @@ import AdminOrders from './pages/AdminOrders';
 
 import { me, logout } from './auth';
 
+// Helpers pentru NavLink activ
+const navCls = ({ isActive }) => (isActive ? 'active' : undefined);
+
+// Gărzi simple (frontend). Backend-ul oricum validează, dar ascundem rutele vizual.
+function RequireAuth({ user, children }) {
+  if (!user) return <Navigate replace to="/login" />;
+  return children;
+}
+function EmployeeOnly({ user, children }) {
+  if (!user) return <Navigate replace to="/login" />;
+  if (user.role !== 'employee') return <Navigate replace to="/menu" />;
+  return children;
+}
+
 export default function App() {
-  const [user, setUser] = useState(null);        // utilizatorul logat (sau null)
-  const [cart, setCart] = useState([]);          // [{ p, qty }]
+  const [user, setUser] = useState(null);
+  const [cart, setCart] = useState([]); // [{ p, qty }]
   const nav = useNavigate();
 
   // ia utilizatorul curent la mount
@@ -36,6 +50,8 @@ export default function App() {
     }
   }
 
+  const cartCount = cart.reduce((s, x) => s + x.qty, 0);
+
   return (
     <div>
       {/* HEADER */}
@@ -43,25 +59,30 @@ export default function App() {
         <div className="container flex between center">
           <Link className="brand" to="/">🍝 Restaurant</Link>
           <nav>
-            <NavLink to="/menu">Meniu</NavLink>
-            <NavLink to="/cart">Coș ({cart.reduce((s, x) => s + x.qty, 0)})</NavLink>
+            <NavLink className={navCls} to="/menu">Meniu</NavLink>
+            <NavLink className={navCls} to="/cart">Coș ({cartCount})</NavLink>
+
             {user ? (
               <>
                 <span style={{ margin: '0 8px' }}>
                   Salut, <strong>{user.name}</strong> ({user.role})
                 </span>
-                {user.role === 'employee' && (
+
+                {user.role === 'employee' ? (
                   <>
-                    <NavLink to="/admin/products">Admin Produse</NavLink>
-                    <NavLink to="/admin/orders">Comenzi</NavLink>
+                    <NavLink className={navCls} to="/admin/products">Admin Produse</NavLink>
+                    <NavLink className={navCls} to="/admin/orders">Comenzi</NavLink>
                   </>
+                ) : (
+                  <NavLink className={navCls} to="/my-orders">Comenzile mele</NavLink>
                 )}
+
                 <button className="btn-link" onClick={doLogout}>Logout</button>
               </>
             ) : (
               <>
-                <NavLink to="/login">Login</NavLink>
-                <NavLink to="/register">Register</NavLink>
+                <NavLink className={navCls} to="/login">Login</NavLink>
+                <NavLink className={navCls} to="/register">Register</NavLink>
               </>
             )}
           </nav>
@@ -73,10 +94,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Home />} />
 
-          <Route
-            path="/menu"
-            element={<Menu onAdd={addToCart} />}
-          />
+          <Route path="/menu" element={<Menu onAdd={addToCart} />} />
 
           <Route
             path="/login"
@@ -88,16 +106,35 @@ export default function App() {
             element={<Register onDone={async () => { setUser(await me()); nav('/'); }} />}
           />
 
+          <Route path="/cart" element={<Cart cart={cart} setCart={setCart} />} />
+
+          {/* Client: Comenzile mele */}
           <Route
-            path="/cart"
-            element={<Cart cart={cart} setCart={setCart} />}
+            path="/my-orders"
+            element={
+              <RequireAuth user={user}>
+                <MyOrders />
+              </RequireAuth>
+            }
           />
 
-          <Route path="/my-orders" element={<MyOrders />} />
-
-          {/* Admin – backend-ul oricum verifică rolul */}
-          <Route path="/admin/products" element={<AdminProducts />} />
-          <Route path="/admin/orders" element={<AdminOrders />} />
+          {/* Admin */}
+          <Route
+            path="/admin/products"
+            element={
+              <EmployeeOnly user={user}>
+                <AdminProducts />
+              </EmployeeOnly>
+            }
+          />
+          <Route
+            path="/admin/orders"
+            element={
+              <EmployeeOnly user={user}>
+                <AdminOrders />
+              </EmployeeOnly>
+            }
+          />
 
           {/* fallback */}
           <Route path="*" element={<Navigate replace to="/menu" />} />

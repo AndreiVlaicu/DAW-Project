@@ -1,7 +1,10 @@
+// în ambele repo-uri
+const BaseRepository = require('./BaseRepository');
+
 const Product = require('../models/Product');
 
-class ProductRepo {
-    constructor(pool) { this.pool = pool; }
+class ProductRepo extends BaseRepository {
+    //constructor(pool) { this.pool = pool; }
 
     async findAllWithCategory() {
         const { rows } = await this.pool.query(`

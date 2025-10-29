@@ -15,6 +15,7 @@ const path = require('path');
 // ===== CONFIG =====
 const DATABASE_URL = process.env.DATABASE_URL
     || 'postgres://postgres:1q2w3e@localhost:5432/dawprojectfinal';
+const ORDER_STATUSES = ['new', 'preparing', 'ready', 'completed', 'canceled'];
 const PORT = Number(process.env.PORT || 4000);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev_secret_schimba_ma';
@@ -35,24 +36,17 @@ app.use(express.json());
 app.use(cookieParser());
 app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
 
-app.use(
-    session({
-        secret: SESSION_SECRET,
-        resave: false,
-        saveUninitialized: false,
-        store: new pgSession({
-            pool,
-            tableName: 'session',
-            createTableIfMissing: true,
-        }),
-        cookie: {
-            httpOnly: true,
-            sameSite: 'lax',
-            secure: false,
-            maxAge: 1000 * 60 * 60 * 24,
-        },
-    })
-);
+app.use(session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    store: new pgSession({
+        pool,
+        tableName: 'session',
+        createTableIfMissing: true,
+    }),
+    cookie: { httpOnly: true, sameSite: 'lax', secure: false, maxAge: 1000 * 60 * 60 * 24 },
+}));
 
 // CSRF după sesiuni
 app.use(csurf({ cookie: true }));
@@ -82,8 +76,7 @@ app.get('/api/assets/images', (req, res) => {
         if (!subDir) return res.status(400).json({ error: 'Director invalid' });
 
         const abs = path.join(PUBLIC_DIR, subDir);
-        const items = fs
-            .readdirSync(abs)
+        const items = fs.readdirSync(abs)
             .filter(f => /\.(png|jpe?g|gif|webp|avif)$/i.test(f))
             .map(name => ({ name, url: `/${subDir}/${name}` }));
 
@@ -104,9 +97,12 @@ app.post('/api/auth/register', async (req, res, next) => {
         const userRole = role === 'employee' ? 'employee' : 'client';
 
         const { rows } = await pool.query(
-            'INSERT INTO users (name, email, password_hash, role, is_active, created_at, updated_at) VALUES ($1,$2,$3,$4,true,NOW(),NOW()) RETURNING id,name,email,role',
+            `INSERT INTO users (name, email, password_hash, role, is_active, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,true,NOW(),NOW())
+       RETURNING id,name,email,role`,
             [name.trim(), String(email).toLowerCase().trim(), hash, userRole]
         );
+
         req.session.user = rows[0];
         res.json({ ok: true, user: rows[0] });
     } catch (e) { next(e); }
@@ -115,7 +111,10 @@ app.post('/api/auth/register', async (req, res, next) => {
 app.post('/api/auth/login', async (req, res, next) => {
     try {
         const { email, password } = req.body;
-        const { rows } = await pool.query('SELECT * FROM users WHERE email=$1 LIMIT 1', [String(email).toLowerCase().trim()]);
+        const { rows } = await pool.query(
+            'SELECT * FROM users WHERE email=$1 LIMIT 1',
+            [String(email).toLowerCase().trim()]
+        );
         const u = rows[0];
         if (!u) return res.status(400).json({ error: 'Date invalide' });
         const ok = await bcrypt.compare(password, u.password_hash);
@@ -128,7 +127,7 @@ app.post('/api/auth/login', async (req, res, next) => {
 app.get('/api/auth/me', (req, res) => res.json({ user: req.session.user || null }));
 app.post('/api/auth/logout', requireAuth, (req, res) => req.session.destroy(() => res.json({ ok: true })));
 
-// ===== MVC: importuri și instanțe =====
+// ===== MVC: importuri + instanțe =====
 const ProductRepo = require('./server/repositories/product.repo');
 const CategoryRepo = require('./server/repositories/category.repo');
 
@@ -141,16 +140,14 @@ const CategoryController = require('./server/controllers/category.controller');
 const productRoutesFactory = require('./server/routes/product.routes');
 const categoryRoutesFactory = require('./server/routes/category.routes');
 
-const buildApi = require('./server/routes'); // index.js
+const buildApi = require('./server/routes');            // index.js
 const errorHandler = require('./server/middlewares/errorHandler');
 
 // Repo + Service + Controller
 const productRepo = new ProductRepo(pool);
 const categoryRepo = new CategoryRepo(pool);
-
 const productService = new ProductService(productRepo);
 const categoryService = new CategoryService(categoryRepo);
-
 const productController = new ProductController(productService);
 const categoryController = new CategoryController(categoryService);
 
@@ -164,7 +161,8 @@ app.post('/api/orders', requireAuth, async (req, res, next) => {
     const client = await pool.connect();
     try {
         const items = req.body.items || []; // [{product_id, qty}]
-        if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'Coș gol' });
+        if (!Array.isArray(items) || items.length === 0)
+            return res.status(400).json({ error: 'Coș gol' });
 
         await client.query('BEGIN');
         const insOrder = await client.query(
@@ -189,6 +187,42 @@ app.post('/api/orders', requireAuth, async (req, res, next) => {
     } finally { client.release(); }
 });
 
+// Statusurile valide (pt. dropdown în AdminOrders.jsx)
+app.get('/api/admin/order-statuses', requireEmployee, (_req, res) => {
+    res.json(ORDER_STATUSES);
+});
+
+// Schimbă statusul unei comenzi
+app.patch('/api/admin/orders/:id/status', requireEmployee, async (req, res, next) => {
+    const id = Number(req.params.id);
+    const to = String(req.body?.to_status || '').trim();
+
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'ID invalid' });
+    if (!ORDER_STATUSES.includes(to)) return res.status(400).json({ error: 'Status invalid' });
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const { rows } = await client.query('SELECT status FROM orders WHERE id=$1 FOR UPDATE', [id]);
+        if (!rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Comanda nu există' }); }
+
+        const from = rows[0].status;
+        if (from === to) { await client.query('ROLLBACK'); return res.json({ ok: true, unchanged: true }); }
+
+        await client.query('UPDATE orders SET status=$1, updated_at=NOW() WHERE id=$2', [to, id]);
+        await client.query(
+            `INSERT INTO order_status_history (order_id, from_status, to_status, changed_by_user, changed_at)
+       VALUES ($1,$2,$3,$4,NOW())`,
+            [id, from, to, req.session.user.id]
+        );
+        await client.query('COMMIT');
+        res.json({ ok: true, from_status: from, to_status: to });
+    } catch (e) {
+        await client.query('ROLLBACK'); next(e);
+    } finally { client.release(); }
+});
+
+// Comenzile mele (client)
 app.get('/api/my-orders', requireAuth, async (req, res, next) => {
     try {
         const { rows } = await pool.query(`
@@ -204,7 +238,7 @@ app.get('/api/my-orders', requireAuth, async (req, res, next) => {
     } catch (e) { next(e); }
 });
 
-// ===== ADMIN: vizualizare comenzi =====
+// Admin – listă comenzi
 app.get('/api/admin/orders', requireEmployee, async (_req, res, next) => {
     try {
         const { rows } = await pool.query(`
@@ -221,7 +255,7 @@ app.get('/api/admin/orders', requireEmployee, async (_req, res, next) => {
 });
 
 // ===== ERROR HANDLER — ULTIMUL =====
-app.use(errorHandler);
+app.use(require('./server/middlewares/errorHandler'));
 
 // ===== START =====
 app.listen(PORT, () => {

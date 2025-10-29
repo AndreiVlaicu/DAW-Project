@@ -1,8 +1,9 @@
+// server/routes/index.js
 const express = require('express');
 
-module.exports = ({ productRoutes, categoryRoutes }) => {
+module.exports = function buildApi({ productRoutes, categoryRoutes }) {
     const api = express.Router();
-    api.use('/products', productRoutes);
-    api.use('/categories', categoryRoutes);
+    api.use(productRoutes);
+    api.use(categoryRoutes);
     return api;
 };

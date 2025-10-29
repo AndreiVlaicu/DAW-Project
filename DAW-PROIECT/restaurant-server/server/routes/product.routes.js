@@ -1,9 +1,14 @@
+// server/routes/product.routes.js
 const express = require('express');
 const router = express.Router();
 
 module.exports = (controller, requireEmployee) => {
-    router.get('/', controller.list);
-    router.post('/admin', requireEmployee, controller.create);
-    router.delete('/admin/:id', requireEmployee, controller.remove);
+    // Public (frontend meniu)
+    router.get('/products', controller.list);
+
+    // Admin (creează / șterge)
+    router.post('/admin/products', requireEmployee, controller.create);
+    router.delete('/admin/products/:id', requireEmployee, controller.remove);
+
     return router;
 };
