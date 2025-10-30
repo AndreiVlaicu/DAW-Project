@@ -31,7 +31,7 @@ export default function AdminOrders(){
       setSavingId(orderId);
       await getCsrf();
       await api.patch(`/admin/orders/${orderId}/status`, { to_status: toStatus });
-      // actualizez local ca să pară instant
+
       setOrders(os => os.map(o => o.id === orderId ? { ...o, status: toStatus } : o));
     } catch (e) {
       alert(e?.response?.data?.error || 'Nu s-a putut schimba statusul.');

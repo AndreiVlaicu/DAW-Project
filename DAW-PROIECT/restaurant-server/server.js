@@ -1,7 +1,7 @@
 // server.js — Express + PostgreSQL (arhitectură MVC)
 
 const express = require('express');
-const helmet = require('helmet');
+//const helmet = require('helmet');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const session = require('express-session');
@@ -11,15 +11,22 @@ const csurf = require('csurf');
 const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
+const security = require('./server/middlewares/security');
+
 
 // ===== CONFIG =====
 const DATABASE_URL = process.env.DATABASE_URL
     || 'postgres://postgres:1q2w3e@localhost:5432/dawprojectfinal';
-const ORDER_STATUSES = ['new', 'preparing', 'ready', 'completed', 'canceled'];
+const ORDER_STATUSES = ['new', 'preparing', 'ready', 'delivered', 'canceled'];
 const PORT = Number(process.env.PORT || 4000);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || 'http://localhost:5173';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev_secret_schimba_ma';
-
+const DB_STATUS_MAP = {
+    toDb: { delivered: 'delivered' },   // UI -> DB
+    fromDb: { deliverd: 'delivered' },   // DB -> UI
+};
+const toDb = s => DB_STATUS_MAP.toDb[s] || s;
+const toUi = s => DB_STATUS_MAP.fromDb[s] || s;
 const PUBLIC_DIR = path.join(__dirname, 'web', 'public');
 const SAFE_DIRS = { carusel: 'carusel', hero: 'carusel', uploads: 'uploads' };
 
@@ -29,9 +36,10 @@ const pool = new Pool({
     ssl: process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined,
 });
 
+
 // ===== APP =====
 const app = express();
-app.use(helmet());
+security(app); //app.use(helmet()); <- atât. Include helmet + rate limiting + headers
 app.use(express.json());
 app.use(cookieParser());
 app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
@@ -189,20 +197,24 @@ app.post('/api/orders', requireAuth, async (req, res, next) => {
 
 // Statusurile valide (pt. dropdown în AdminOrders.jsx)
 app.get('/api/admin/order-statuses', requireEmployee, (_req, res) => {
-    res.json(ORDER_STATUSES);
+    res.json(ORDER_STATUSES);     // nu mai folosim ORDER_STATUSES_PUBLIC
 });
+
 
 // Schimbă statusul unei comenzi
 app.patch('/api/admin/orders/:id/status', requireEmployee, async (req, res, next) => {
     const id = Number(req.params.id);
-    const to = String(req.body?.to_status || '').trim();
+    const toPublic = String(req.body?.to_status || '').trim();
 
     if (!Number.isFinite(id)) return res.status(400).json({ error: 'ID invalid' });
-    if (!ORDER_STATUSES.includes(to)) return res.status(400).json({ error: 'Status invalid' });
+    if (!ORDER_STATUSES.includes(toPublic)) return res.status(400).json({ error: 'Status invalid' });
+
+    const to = toDb(toPublic);
 
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+
         const { rows } = await client.query('SELECT status FROM orders WHERE id=$1 FOR UPDATE', [id]);
         if (!rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Comanda nu există' }); }
 
@@ -215,14 +227,14 @@ app.patch('/api/admin/orders/:id/status', requireEmployee, async (req, res, next
        VALUES ($1,$2,$3,$4,NOW())`,
             [id, from, to, req.session.user.id]
         );
+
         await client.query('COMMIT');
-        res.json({ ok: true, from_status: from, to_status: to });
+        res.json({ ok: true, from_status: toUi(from), to_status: toUi(to) });
     } catch (e) {
         await client.query('ROLLBACK'); next(e);
     } finally { client.release(); }
 });
 
-// Comenzile mele (client)
 app.get('/api/my-orders', requireAuth, async (req, res, next) => {
     try {
         const { rows } = await pool.query(`
@@ -234,9 +246,29 @@ app.get('/api/my-orders', requireAuth, async (req, res, next) => {
       GROUP BY o.id
       ORDER BY o.created_at DESC
     `, [req.session.user.id]);
-        res.json(rows);
+
+        res.json(rows.map(r => ({ ...r, status: toUi(r.status) }))); // convertim 'deliverd' -> 'delivered'
     } catch (e) { next(e); }
 });
+
+
+// Comenzile mele (client)
+app.get('/api/admin/orders', requireEmployee, async (_req, res, next) => {
+    try {
+        const { rows } = await pool.query(`
+      SELECT o.id, u.name AS user_name, o.status, o.created_at,
+             COALESCE(SUM(oi.qty*oi.unit_price),0)::numeric(12,2) AS total
+      FROM orders o
+      JOIN users u ON u.id=o.user_id
+      LEFT JOIN order_items oi ON oi.order_id=o.id
+      GROUP BY o.id, u.name
+      ORDER BY o.created_at DESC
+    `);
+        res.json(rows.map(r => ({ ...r, status: toUi(r.status) })));
+    } catch (e) { next(e); }
+});
+
+
 
 // Admin – listă comenzi
 app.get('/api/admin/orders', requireEmployee, async (_req, res, next) => {
